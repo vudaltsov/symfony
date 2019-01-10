@@ -176,7 +176,7 @@ class ArgumentResolverTest extends TestCase
     }
 
     /**
-     * @expectedException \InvalidArgumentException
+     * @expectedException \UnexpectedValueException
      */
     public function testGetArgumentWithoutArray()
     {

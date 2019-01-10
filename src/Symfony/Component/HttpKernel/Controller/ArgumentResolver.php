@@ -11,14 +11,17 @@
 
 namespace Symfony\Component\HttpKernel\Controller;
 
+use Psr\Container\ContainerInterface;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpKernel\Controller\ArgumentResolver\DefaultValueResolver;
 use Symfony\Component\HttpKernel\Controller\ArgumentResolver\RequestAttributeValueResolver;
 use Symfony\Component\HttpKernel\Controller\ArgumentResolver\RequestValueResolver;
 use Symfony\Component\HttpKernel\Controller\ArgumentResolver\SessionValueResolver;
 use Symfony\Component\HttpKernel\Controller\ArgumentResolver\VariadicValueResolver;
+use Symfony\Component\HttpKernel\ControllerMetadata\ArgumentMetadata;
 use Symfony\Component\HttpKernel\ControllerMetadata\ArgumentMetadataFactory;
 use Symfony\Component\HttpKernel\ControllerMetadata\ArgumentMetadataFactoryInterface;
+use Symfony\Component\HttpKernel\ControllerMetadata\Config\ArgumentConfigInterface;
 
 /**
  * Responsible for resolving the arguments passed to an action.
@@ -34,10 +37,13 @@ final class ArgumentResolver implements ArgumentResolverInterface
      */
     private $argumentValueResolvers;
 
-    public function __construct(ArgumentMetadataFactoryInterface $argumentMetadataFactory = null, iterable $argumentValueResolvers = array())
+    private $configuredArgumentValueResolvers;
+
+    public function __construct(ArgumentMetadataFactoryInterface $argumentMetadataFactory = null, iterable $argumentValueResolvers = [], ContainerInterface $configuredArgumentValueResolvers = null)
     {
-        $this->argumentMetadataFactory = $argumentMetadataFactory ?: new ArgumentMetadataFactory();
+        $this->argumentMetadataFactory = $argumentMetadataFactory ?? new ArgumentMetadataFactory();
         $this->argumentValueResolvers = $argumentValueResolvers ?: self::getDefaultArgumentValueResolvers();
+        $this->configuredArgumentValueResolvers = $configuredArgumentValueResolvers;
     }
 
     /**
@@ -45,37 +51,18 @@ final class ArgumentResolver implements ArgumentResolverInterface
      */
     public function getArguments(Request $request, $controller)
     {
-        $arguments = array();
+        $arguments = [];
 
         foreach ($this->argumentMetadataFactory->createArgumentMetadata($controller) as $metadata) {
-            foreach ($this->argumentValueResolvers as $resolver) {
-                if (!$resolver->supports($request, $metadata)) {
-                    continue;
-                }
-
-                $resolved = $resolver->resolve($request, $metadata);
-
-                if (!$resolved instanceof \Generator) {
-                    throw new \InvalidArgumentException(sprintf('%s::resolve() must yield at least one value.', \get_class($resolver)));
-                }
-
-                foreach ($resolved as $append) {
-                    $arguments[] = $append;
-                }
-
-                // continue to the next controller argument
-                continue 2;
+            if (null !== $config = $metadata->getConfig()) {
+                $values = $this->resolveConfigured($request, $metadata, $config);
+            } else {
+                $values = $this->resolveNonConfigured($request, $metadata, $controller);
             }
 
-            $representative = $controller;
-
-            if (\is_array($representative)) {
-                $representative = sprintf('%s::%s()', \get_class($representative[0]), $representative[1]);
-            } elseif (\is_object($representative)) {
-                $representative = \get_class($representative);
+            foreach ($values as $value) {
+                $arguments[] = $value;
             }
-
-            throw new \RuntimeException(sprintf('Controller "%s" requires that you provide a value for the "$%s" argument. Either the argument is nullable and no null value has been provided, no default value has been provided or because there is a non optional argument after this one.', $representative, $metadata->getName()));
         }
 
         return $arguments;
@@ -83,12 +70,59 @@ final class ArgumentResolver implements ArgumentResolverInterface
 
     public static function getDefaultArgumentValueResolvers(): iterable
     {
-        return array(
+        return [
             new RequestAttributeValueResolver(),
             new RequestValueResolver(),
             new SessionValueResolver(),
             new DefaultValueResolver(),
             new VariadicValueResolver(),
-        );
+        ];
+    }
+
+    private function resolveConfigured(Request $request, ArgumentMetadata $metadata, ArgumentConfigInterface $config): \Generator
+    {
+        $class = $config::resolvedBy();
+
+        if (null === $this->configuredArgumentValueResolvers || !$this->configuredArgumentValueResolvers->has($class)) {
+            throw new \RuntimeException(sprintf('Argument value resolver "%s" does not exist or is not enabled. Check the "resolvedBy" method in your config class "%s".', $class, \get_class($config)));
+        }
+
+        $resolver = $this->configuredArgumentValueResolvers->get($class);
+
+        if (!$resolver instanceof ConfiguredArgumentValueResolverInterface) {
+            throw new \UnexpectedValueException(sprintf('Argument value resolver "%s" must implement "%s".', \get_class($resolver), ConfiguredArgumentValueResolverInterface::class));
+        }
+
+        return $resolver->resolveConfigured($request, $metadata, $config);
+    }
+
+    private function resolveNonConfigured(Request $request, ArgumentMetadata $metadata, $controller): \Generator
+    {
+        foreach ($this->argumentValueResolvers as $resolver) {
+            if ($resolver->supports($request, $metadata)) {
+                $values = $resolver->resolve($request, $metadata);
+
+                if (!$values instanceof \Generator) {
+                    throw new \UnexpectedValueException(sprintf('%s::resolve() must yield at least one value.', \get_class($resolver)));
+                }
+
+                return $values;
+            }
+        }
+
+        throw new \RuntimeException(sprintf('Controller "%s" requires that you provide a value for the "$%s" argument. Either the argument is nullable and no null value has been provided, no default value has been provided or because there is a non optional argument after this one.', $this->getControllerName($controller), $metadata->getName()));
+    }
+
+    private function getControllerName($controller): string
+    {
+        if (\is_array($controller)) {
+            return sprintf('%s::%s()', \get_class($controller[0]), $controller[1]);
+        }
+
+        if (\is_object($controller)) {
+            return \get_class($controller);
+        }
+
+        return $controller;
     }
 }
