@@ -54,7 +54,13 @@ class File extends \SplFileInfo
      */
     public function guessExtension()
     {
-        return MimeTypes::getDefault()->getExtensions($this->getMimeType())[0] ?? null;
+        $mimeType = $this->getMimeType();
+
+        if (null === $mimeType) {
+            return null;
+        }
+
+        return MimeTypes::getDefault()->getExtensions($mimeType)[0] ?? null;
     }
 
     /**

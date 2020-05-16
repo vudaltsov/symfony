@@ -31,7 +31,7 @@ use Symfony\Component\Mime\MimeTypes;
  */
 class UploadedFile extends File
 {
-    private $test = false;
+    private $test;
     private $originalName;
     private $mimeType;
     private $error;
@@ -112,7 +112,7 @@ class UploadedFile extends File
      * For a trusted mime type, use getMimeType() instead (which guesses the mime
      * type based on the file content).
      *
-     * @return string|null The mime type
+     * @return string The mime type
      *
      * @see getMimeType()
      */
